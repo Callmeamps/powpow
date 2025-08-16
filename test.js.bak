@@ -1,0 +1,128 @@
+// FILE: game.js (The single, consolidated, and correctly structured file)
+
+import { MaterialRegistry, E } from './MaterialRegistry.js';
+import { createNoise2D } from 'simplex-noise';
+
+// ---===[ MASTER CONTROL PANEL ]===---
+const dungeonParams = {
+    BLUEPRINT_WIDTH: 81, BLUEPRINT_HEIGHT: 61, TILE_SCALE: 10, GRID_DEPTH: 5,
+    LAYER_SIMILARITY: 0.85, VERTICAL_CONNECTOR_CHANCE: 0.4,
+    ROOM_MIN_SIZE_BASE: 2, ROOM_MAX_SIZE_BASE: 4, ROOM_EXTRA_SIZE: 2,
+    ROOM_RECTANGULARITY: 0.7, ROOM_TRIES: 300, WINDING_PERCENT: 40,
+    EXTRA_CONNECTOR_CHANCE: 20, DEAD_END_REMOVAL_PASSES: 1,
+    DEPTH_SHADING_STRENGTH: 0.3, ATMOSPHERE_COLOR: { r: 26, g: 26, b: 46 },
+};
+
+// --- Helper Functions and Classes ---
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+class Rect {
+    constructor(x,y,w,h){ this.x=x; this.y=y; this.w=w; this.h=h; }
+    intersects(o){ return !(this.x+this.w <= o.x || o.x+o.w <= o.x || this.y+this.h <= o.y || o.y+o.h <= o.y); }
+}
+
+// --- CORE CLASS: CellGrid ---
+class CellGrid {
+    constructor(width, height, depth) {
+        this.width = width; this.height = height; this.depth = depth;
+        this.cells = new Uint8Array(width * height * depth);
+    }
+    getIndex(x, y, z) { return (z * this.width * this.height) + (y * this.width) + x; }
+    get(x, y, z) { if (x<0||x>=this.width||y<0||y>=this.height||z<0||z>=this.depth) return E.STONE; return this.cells[this.getIndex(x,y,z)]; }
+    set(x, y, z, type) { if (x<0||x>=this.width||y<0||y>=this.height||z<0||z>=this.depth) return; this.cells[this.getIndex(x,y,z)] = type; }
+    swap(x1, y1, z1, x2, y2, z2) { const t1=this.get(x1,y1,z1); this.set(x1,y1,z1, this.get(x2,y2,z2)); this.set(x2,y2,z2, t1); }
+    isRectSolid(x, y, z, w, h) { for (let i = Math.floor(x); i < x + w; i++) for (let j = Math.floor(y); j < y + h; j++) if (MaterialRegistry.isSolid(this.get(i, j, z))) return true; return false; }
+    update() { for (let z = 0; z < this.depth; z++) { for (let y = this.height - 2; y >= 0; y--) { for (let i = 0; i < this.width; i++) { const scanLeft = Math.random() < 0.5; const x = scanLeft ? i : this.width - 1 - i; const type = this.get(x, y, z); if (type === E.EMPTY || type === E.STONE) continue; const mat = MaterialRegistry.get(type); const belowMat = MaterialRegistry.get(this.get(x, y + 1, z)); if (mat.density > belowMat.density) { this.swap(x, y, z, x, y + 1, z); continue; } const dir = Math.random() < 0.5 ? 1 : -1; const belowSideMat = MaterialRegistry.get(this.get(x + dir, y + 1, z)); if (type === E.SAND && mat.density > belowSideMat.density) { this.swap(x, y, z, x + dir, y + 1, z); continue; } else if (type === E.WATER) { const sideMat = MaterialRegistry.get(this.get(x + dir, y, z)); if (mat.density > sideMat.density) { this.swap(x, y, z, x + dir, y, z); continue; } } const zDir = Math.random() < 0.5 ? 1 : -1; const zMat = MaterialRegistry.get(this.get(x, y, z + zDir)); if (mat.density > zMat.density) { this.swap(x, y, z, x, y, z + zDir); } } } } }
+}
+
+// --- CORE CLASS: LevelGenerator ---
+class LevelGenerator {
+    constructor(params) {
+        this.params = params;
+        this.width = params.BLUEPRINT_WIDTH;
+        this.height = params.BLUEPRINT_HEIGHT;
+        this.blueprints = new Array(params.GRID_DEPTH);
+        this.noise2D = createNoise2D();
+        this.grid = null; this.regions = null; this.rooms = []; this.currentRegion = -1;
+        this.directions = [ {dx:-1,dy:0}, {dx:1,dy:0}, {dx:0,dy:-1}, {dx:0,dy:1} ];
+    }
+    generate(grid) { const mainLayer = Math.floor(this.params.GRID_DEPTH / 2); this._generateSingleBlueprint(mainLayer); this._generateCorrelatedBlueprints(mainLayer); this._addVerticalConnectors(); this._stamp3DBlueprintToGrid(grid); }
+    _generateSingleBlueprint(layerIndex) { this.grid = Array(this.width).fill(0).map(() => Array(this.height).fill(0)); this.regions = Array(this.width).fill(0).map(() => Array(this.height).fill(null)); this.rooms = []; this.currentRegion = -1; this._addRooms(); for (let y = 1; y < this.height; y += 2) for (let x = 1; x < this.width; x += 2) if (this.grid[x][y] === 0) this._growMaze(x, y); this._connectRegions(); this._removeDeadEnds(); this.blueprints[layerIndex] = { grid: this.grid, rooms: this.rooms }; }
+    _generateCorrelatedBlueprints(mainLayer) { for (let z = mainLayer - 1; z >= 0; z--) this._mutateBlueprint(z, this.blueprints[z + 1]); for (let z = mainLayer + 1; z < this.params.GRID_DEPTH; z++) this._mutateBlueprint(z, this.blueprints[z - 1]); }
+    _mutateBlueprint(targetLayerIndex, sourceBlueprint) { const newBpGrid = sourceBlueprint.grid.map(arr => arr.slice()); const threshold = (1.0 - this.params.LAYER_SIMILARITY) * 0.5; const noiseScale = 15.0; for (let y = 1; y < this.height - 1; y++) { for (let x = 1; x < this.width - 1; x++) { const noiseValue = this.noise2D(x / noiseScale, y / noiseScale); if (sourceBlueprint.grid[x][y] === 0 && noiseValue > threshold) newBpGrid[x][y] = 1; else if (sourceBlueprint.grid[x][y] === 1 && noiseValue < -threshold) newBpGrid[x][y] = 0; } } this.blueprints[targetLayerIndex] = { grid: newBpGrid, rooms: [] }; }
+    _addVerticalConnectors() { const shaftSize = 1; for (let z = 0; z < this.params.GRID_DEPTH - 1; z++) { const bp1 = this.blueprints[z]; const bp2 = this.blueprints[z+1]; if (!bp1 || !bp2) continue; for (let y = 1; y < this.height - shaftSize*2; y++) { for (let x = 1; x < this.width - shaftSize*2; x++) { if (Math.random() < this.params.VERTICAL_CONNECTOR_CHANCE / 1000) { let isClearOnBoth = true; for(let sx=0; sx < shaftSize*2; sx++) for(let sy=0; sy < shaftSize*2; sy++) { if(bp1.grid[x+sx][y+sy] === 0 || bp2.grid[x+sx][y+sy] === 0) isClearOnBoth = false; } if(isClearOnBoth) { for(let sx=0; sx < shaftSize*2; sx++) for(let sy=0; sy < shaftSize*2; sy++) { bp1.grid[x+sx][y+sy] = 2; bp2.grid[x+sx][y+sy] = 2; } } } } } } }
+    _stamp3DBlueprintToGrid(grid) { const scale = this.params.TILE_SCALE; for (let z = 0; z < this.params.GRID_DEPTH; z++) { const bp = this.blueprints[z]; if (!bp) continue; for (let bpX = 0; bpX < this.width; bpX++) { for (let bpY = 0; bpY < this.height; bpY++) { const tileType = bp.grid[bpX][bpY]; const material = (tileType === 0) ? E.STONE : E.EMPTY; for (let pX = 0; pX < scale; pX++) { for (let pY = 0; pY < scale; pY++) { grid.set(bpX * scale + pX, bpY * scale + pY, z, material); } } } } } }
+    _startRegion() { this.currentRegion++; }
+    _carve(x, y) { if (this.grid && this.grid[x]) { this.grid[x][y] = 1; this.regions[x][y] = this.currentRegion; } }
+    _canCarve(x, y, {dx, dy}) { const nx = x + dx * 2, ny = y + dy * 2; if (nx < 0 || ny < 0 || nx >= this.width || ny >= this.height) return false; return this.grid[nx][ny] === 0; }
+    _addRooms() { for (let i = 0; i < this.params.ROOM_TRIES; i++) { const size = randInt(this.params.ROOM_MIN_SIZE_BASE, this.params.ROOM_MAX_SIZE_BASE + this.params.ROOM_EXTRA_SIZE) * 2 + 1; const rectangularity = randInt(0, Math.floor(size * this.params.ROOM_RECTANGULARITY / 2)) * 2; let w = size, h = size; if (Math.random() < 0.5) w += rectangularity; else h += rectangularity; if (w >= this.width - 2 || h >= this.height - 2) continue; const x = randInt(0, Math.floor((this.width - w - 2) / 2)) * 2 + 1; const y = randInt(0, Math.floor((this.height - h - 2) / 2)) * 2 + 1; const rect = new Rect(x, y, w, h); if (this.rooms.some(r => r.intersects(rect))) continue; this.rooms.push(rect); this._startRegion(); for (let dx = 0; dx < w; dx++) for (let dy = 0; dy < h; dy++) this._carve(rect.x + dx, rect.y + dy); } }
+    _growMaze(sx, sy) { let cells = [{ x: sx, y: sy }]; this._startRegion(); this._carve(sx, sy); let lastDir = null; while (cells.length) { const cell = cells[cells.length - 1]; let options = this.directions.filter(d => this._canCarve(cell.x, cell.y, d)); if (options.length) { let dir; if (lastDir && options.includes(lastDir) && Math.random() * 100 > this.params.WINDING_PERCENT) { dir = lastDir; } else { dir = options[randInt(0, options.length - 1)]; } this._carve(cell.x + dir.dx, cell.y + dir.dy); this._carve(cell.x + dir.dx * 2, cell.y + dir.dy * 2); cells.push({ x: cell.x + dir.dx * 2, y: cell.y + dir.dy * 2 }); lastDir = dir; } else { cells.pop(); lastDir = null; } } }
+    _connectRegions() { let connectors = new Map(); for (let x = 1; x < this.width - 1; x++) { for (let y = 1; y < this.height - 1; y++) { if (this.grid[x][y] !== 0) continue; let neigh = new Set(); this.directions.forEach(d => { let r = this.regions[x + d.dx][y + d.dy]; if (r != null) neigh.add(r); }); if (neigh.size < 2) continue; connectors.set(`${x},${y}`, [...neigh]); } } let merged = {}; for(let i = 0; i <= this.currentRegion; i++) merged[i] = i; let find = r => { while(r !== merged[r]) r = merged[r]; return r; }; let connectorKeys = [...connectors.keys()]; while(new Set(Object.values(merged).map(find)).size > 1) { if (connectorKeys.length === 0) break; const key = connectorKeys[randInt(0, connectorKeys.length - 1)]; const [x, y] = key.split(',').map(Number); this.grid[x][y] = 1; const regs = connectors.get(key).map(find); const dest = regs[0]; const srcs = regs.slice(1); for(let i = 0; i <= this.currentRegion; i++) { if(srcs.includes(find(i))) merged[i] = dest; } connectorKeys = connectorKeys.filter(k => { const currentRegions = new Set(connectors.get(k).map(find)); if (currentRegions.size > 1) return true; if (Math.random() * 100 < this.params.EXTRA_CONNECTOR_CHANCE) { const [cx, cy] = k.split(',').map(Number); this.grid[cx][cy] = 1; } return false; }); } }
+    _removeDeadEnds() { for (let i = 0; i < this.params.DEAD_END_REMOVAL_PASSES; i++) { let done = false; while (!done) { done = true; for (let x = 1; x < this.width - 1; x++) { for (let y = 1; y < this.height - 1; y++) { if (this.grid[x][y] === 0) continue; let exits = 0; this.directions.forEach(d => { if(this.grid[x+d.dx][y+d.dy] === 1) exits++; }); if (exits === 1) { this.grid[x][y] = 0; done = false; } } } } } }
+}
+
+// --- CORE CLASS: Player ---
+class Player {
+    constructor(config) { this.id = config.id; this.x = config.x; this.y = config.y; this.z = config.z; this.color = config.color; this.controls = config.controls; this.vx = 0; this.vy = 0; this.width = 8; this.height = 16; this.grounded = false; this.health = 100; this.isAttacking = false; this.attackCooldown = 0; this.attackDuration = 0; this.GRAVITY = 0.4; this.FRICTION = 0.8; this.JUMP_FORCE = -9; this.PLAYER_SPEED = 3; }
+    takeDamage(amount) { this.health -= amount; console.log(`${this.id} took damage, health: ${this.health}`); }
+    attack(entityManager) { if (this.attackCooldown > 0) return; this.isAttacking = true; this.attackDuration = 15; this.attackCooldown = 40; const hitboxWidth = 16; const hitboxX = this.vx >= 0 ? this.x + this.width : this.x - hitboxWidth; const hitbox = { x: hitboxX, y: this.y, width: hitboxWidth, height: this.height }; for (const entity of entityManager.entities) { if (entity === this) continue; if (entity instanceof Player) { if (hitbox.x < entity.x + entity.width && hitbox.x + hitbox.width > entity.x && hitbox.y < entity.y + entity.height && hitbox.height + hitbox.y > entity.y) { entity.takeDamage(10); } } } }
+    update(input, grid, entityManager) { if (this.attackCooldown > 0) this.attackCooldown--; if (this.attackDuration > 0) this.attackDuration--; else this.isAttacking = false; if (input.left) this.vx = -this.PLAYER_SPEED; else if (input.right) this.vx = this.PLAYER_SPEED; else this.vx *= this.FRICTION; if (input.jump && this.grounded) { this.vy = this.JUMP_FORCE; this.grounded = false; } if (input.attack) this.attack(entityManager); this.vy += this.GRAVITY; this.x += this.vx; if (grid.isRectSolid(this.x, this.y, this.z, this.width, this.height)) { this.x -= this.vx; this.vx = 0; } this.y += this.vy; this.grounded = false; if (grid.isRectSolid(this.x, this.y, this.z, this.width, this.height)) { this.y -= this.vy; if(this.vy > 0) this.grounded = true; this.vy = 0; } }
+    draw(ctx, mainLayer) { if (this.z !== mainLayer) return; ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(this.x + 2, this.y + 2, this.width, this.height); if (this.isAttacking) { ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'; const attackWidth = 12; const attackX = this.vx >= 0 ? this.x + this.width : this.x - attackWidth; ctx.fillRect(attackX, this.y, attackWidth, this.height); } ctx.fillStyle = this.color; ctx.fillRect(this.x, this.y, this.width, this.height); }
+}
+
+// --- CORE CLASS: EntityManager ---
+class EntityManager {
+    constructor() { this.entities = []; }
+    add(entity) { this.entities.push(entity); }
+    update(inputs, grid) { for (const entity of this.entities) if (entity instanceof Player) entity.update(inputs[entity.id], grid, this); this.entities = this.entities.filter(entity => { if (entity.health > 0) return true; else { this.onDeath(entity, grid); return false; } }); }
+    onDeath(entity, grid) { console.log(`${entity.id || 'Entity'} has been defeated!`); }
+    draw(ctx, mainLayer) { for (const entity of this.entities) entity.draw(ctx, mainLayer); }
+}
+
+// --- Game Setup ---
+const FINAL_GRID_WIDTH = dungeonParams.BLUEPRINT_WIDTH * dungeonParams.TILE_SCALE;
+const FINAL_GRID_HEIGHT = dungeonParams.BLUEPRINT_HEIGHT * dungeonParams.TILE_SCALE;
+const mainLayer = Math.floor(dungeonParams.GRID_DEPTH / 2);
+
+const canvas = document.getElementById('gameCanvas');
+canvas.width = FINAL_GRID_WIDTH; canvas.height = FINAL_GRID_HEIGHT;
+const ctx = canvas.getContext('2d');
+
+const grid = new CellGrid(FINAL_GRID_WIDTH, FINAL_GRID_HEIGHT, dungeonParams.GRID_DEPTH);
+const entityManager = new EntityManager();
+const generator = new LevelGenerator(dungeonParams);
+generator.generate(grid);
+
+const playerConfigs = {
+    'P1': { id: 'P1', x: 0, y: 0, z: mainLayer, color: '#FF5252', controls: { left: 'KeyA', right: 'KeyD', jump: 'KeyW', attack: 'Space' } },
+    'P2': { id: 'P2', x: 0, y: 0, z: mainLayer, color: '#448AFF', controls: { left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp', attack: 'Enter' } }
+};
+const spawnRooms = generator.rooms.length > 1 ? [generator.rooms[0], generator.rooms[1]] : [{x:10,y:10}, {x:20,y:10}];
+playerConfigs['P1'].x = (spawnRooms[0].x + 2) * dungeonParams.TILE_SCALE;
+playerConfigs['P1'].y = (spawnRooms[0].y + 2) * dungeonParams.TILE_SCALE;
+entityManager.add(new Player(playerConfigs['P1']));
+playerConfigs['P2'].x = (spawnRooms[1].x + 2) * dungeonParams.TILE_SCALE;
+playerConfigs['P2'].y = (spawnRooms[1].y + 2) * dungeonParams.TILE_SCALE;
+entityManager.add(new Player(playerConfigs['P2']));
+
+// --- Input System ---
+const inputs = { 'P1': { left: false, right: false, jump: false, attack: false }, 'P2': { left: false, right: false, jump: false, attack: false } };
+const keyState = {};
+window.addEventListener('keydown', (e) => { keyState[e.code] = true; });
+window.addEventListener('keyup', (e) => { keyState[e.code] = false; });
+function processInputs() { for (const id in playerConfigs) { const c = playerConfigs[id].controls; inputs[id].left = keyState[c.left]||false; inputs[id].right = keyState[c.right]||false; inputs[id].jump = keyState[c.jump]||false; inputs[id].attack = keyState[c.attack]||false; } }
+
+// --- Renderer ---
+const imageData = ctx.createImageData(FINAL_GRID_WIDTH, FINAL_GRID_HEIGHT);
+const data = imageData.data;
+function render() { const mainLayer = Math.floor(dungeonParams.GRID_DEPTH / 2); data.fill(0); for (let z = grid.depth - 1; z >= 0; z--) { const depthDistance = Math.abs(z - mainLayer); const shadeFactor = 1.0 - (depthDistance * (dungeonParams.DEPTH_SHADING_STRENGTH / mainLayer)); const fogFactor = (depthDistance / mainLayer) * 0.5; for (let y = 0; y < grid.height; y++) { for (let x = 0; x < grid.width; x++) { const type = grid.get(x, y, z); if (type === E.EMPTY) continue; const mat = MaterialRegistry.get(type); const color = mat.color; const index = (y * grid.width + x) * 4; const hex = color.substring(1); let r = parseInt(hex.substring(0, 2), 16); let g = parseInt(hex.substring(2, 4), 16); let b = parseInt(hex.substring(4, 6), 16); r *= shadeFactor; g *= shadeFactor; b *= shadeFactor; if (depthDistance > 0) { const fog = dungeonParams.ATMOSPHERE_COLOR; r = r * (1 - fogFactor) + fog.r * fogFactor; g = g * (1 - fogFactor) + fog.g * fogFactor; b = b * (1 - fogFactor) + fog.b * fogFactor; } r = Math.max(0, Math.min(255, r)); g = Math.max(0, Math.min(255, g)); b = Math.max(0, Math.min(255, b)); const topAlpha = mat.opacity; if (topAlpha >= 1.0) { data[index] = r; data[index + 1] = g; data[index + 2] = b; data[index + 3] = 255; } else { const bottomR = data[index]; const bottomG = data[index + 1]; const bottomB = data[index + 2]; data[index] = r * topAlpha + bottomR * (1 - topAlpha); data[index + 1] = g * topAlpha + bottomG * (1 - topAlpha); data[index + 2] = b * topAlpha + bottomB * (1 - topAlpha); data[index + 3] = 255; } } } } ctx.putImageData(imageData, 0, 0); entityManager.draw(ctx, mainLayer); }
+
+// --- Main Game Loop ---
+function gameLoop() {
+    processInputs();
+    entityManager.update(inputs, grid);
+    grid.update();
+    render();
+    requestAnimationFrame(gameLoop);
+}
+
+gameLoop(); // Start the game
