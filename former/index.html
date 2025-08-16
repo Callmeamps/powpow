@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Powder Physics Engine (Combined)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0a0a;
+            color: #e5e5e5;
+            overflow: hidden; /* Prevent scrolling */
+        }
+        canvas {
+            display: block;
+            background: #000;
+            border-radius: 12px;
+            border: 1px solid #2a2a2e;
+            box-shadow: 0 10px 30px rgba(0,0,0,.5);
+            /* This ensures crisp pixels when scaling */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            touch-action: none;
+        }
+        .control-group {
+            background: #111114;
+            border: 1px solid #2a2a2e;
+            border-radius: 16px;
+            padding: 10px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .btn {
+            background: #1c1c21;
+            border: 1px solid #2a2a2e;
+            color: #e5e5e5;
+            padding: 8px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .btn:hover { background: #27272f; }
+        .btn.danger { background: #3b1111; border-color: #5a1b1b; }
+        .btn.danger:hover { background: #5a1b1b; }
+        .btn.active, .palette-btn.active {
+            outline: 2px solid #fff;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+        .pill { padding: 6px 12px; border-radius: 999px; background: #1c1c21; border: 1px solid #2a2a2e; }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4">
+    <div class="w-full max-w-6xl">
+        <h1 class="text-2xl md:text-3xl font-bold mb-4 text-center">Powder Physics Engine</h1>
+        <div class="toolbar flex flex-wrap justify-center gap-3 mb-4">
+            <div class="control-group">
+                <button id="playPause" class="btn">Pause</button>
+                <button id="step" class="btn">Step</button>
+                <button id="clear" class="btn danger">Clear</button>
+                <span class="pill">FPS: <span id="fps">0</span></span>
+            </div>
+            <div class="control-group">
+                <label>Brush</label>
+                <input id="brush" type="range" min="1" max="32" value="8" />
+                <span id="brushVal" class="w-8 text-center tabular-nums">8</span>
+                <button id="eyedrop" class="btn" title="Eyedropper">💧</button>
+            </div>
+            <div id="palette" class="control-group palette flex-wrap"></div>
+            <div class="control-group">
+                <button data-seed="rain" class="btn">Seed: Rain</button>
+                <button data-seed="pile" class="btn">Seed: Sand Pile</button>
+                <button data-seed="oilpool" class="btn">Seed: Oil Pool</button>
+            </div>
+             <div class="control-group">
+                <button id="save" class="btn">Save</button>
+                <label class="btn" for="loadInput">Load</label>
+                <input id="loadInput" type="file" accept="application/json" class="hidden" />
+            </div>
+        </div>
+        <canvas id="physicsCanvas"></canvas>
+        <p class="text-gray-400 text-sm mt-2 text-center">Tip: Fire turns sand to glass; acid eats solids; water and lava solidify to stone.</p>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const LOGICAL_WIDTH = 240;
+        const LOGICAL_HEIGHT = 135;
+        const TICK_MS = 16; // ~60fps
+        const BASE_TEMP = 20; // Room temperature
+        const HEAT_TRANSFER_RATE = 0.5; // How much heat transfers per tick
+
+        // --- ELEMENTS ---
+        const E = { EMPTY: 0, SAND: 1, WATER: 2, OIL: 3, STONE: 4, WOOD: 5, SMOKE: 6, STEAM: 7, ACID: 8, WALL: 9, LAVA: 10, SALT: 11, MUD: 12, GLASS: 13, BLAZE: 14 };
+        const ELEMENTS = {
+            [E.EMPTY]: { name: "Empty", density: 0, state: "gas" },
+            [E.SAND]:  { name: "Sand", density: 9, state: "solid", heatCapacity: 0.8, meltTemp: 1700, combusts: false, movable: true },
+            [E.WATER]: { name: "Water", density: 3, state: "liquid", heatCapacity: 1.0, boilTemp: 100, movable: true },
+            [E.OIL]:   { name: "Oil", density: 2, state: "liquid", heatCapacity: 0.9, combusts: true, ignitionTemp: 150, movable: true },
+            [E.STONE]: { name: "Stone", density: 10, state: "solid", heatCapacity: 0.6, meltTemp: 1200, combusts: false, movable: false },
+            [E.WOOD]:  { name: "Wood", density: 8, state: "solid", heatCapacity: 0.5, combusts: true, ignitionTemp: 300, movable: false },
+            [E.SMOKE]: { name: "Smoke", density: -2, state: "gas", ephemeral: true, life: 120, lifeRange: 90, movable: true },
+            [E.STEAM]: { name: "Steam", density: -3, state: "gas", ephemeral: true, life: 90, lifeRange: 60, temp: 100, movable: true },
+            [E.ACID]:  { name: "Acid", density: 4, state: "liquid", corrosive: true, temp: 20, movable: true },
+            [E.WALL]:  { name: "Wall", density: 1000, state: "solid", movable: false },
+            [E.LAVA]:  { name: "Lava", density: 10, state: "liquid", heatCapacity: 0.7, temp: 1300, movable: true },
+            [E.SALT]:  { name: "Salt", density: 9, state: "solid", heatCapacity: 0.8, meltTemp: 801, movable: true },
+            [E.MUD]:   { name: "Mud", density: 7, state: "solid", heatCapacity: 0.9, meltTemp: 200, movable: true },
+            [E.GLASS]: { name: "Glass", density: 10, state: "solid", heatCapacity: 0.7, meltTemp: 1500, movable: false },
+            [E.BLAZE]: { name: "Blaze", density: 0, state: "gas", ephemeral: true, life: 30, lifeRange: 30, temp: 1200, movable: true },
+        };
+        const PALETTE = [E.SAND, E.WATER, E.OIL, E.ACID, E.BLAZE, E.WOOD, E.STONE, E.WALL, E.LAVA, E.SALT, E.MUD, E.GLASS];
+
+        // --- CANVAS & RENDER SETUP ---
+        const displayCanvas = document.getElementById('physicsCanvas');
+        const displayCtx = displayCanvas.getContext('2d');
+        const logicalCanvas = document.createElement('canvas');
+        logicalCanvas.width = LOGICAL_WIDTH;
+        logicalCanvas.height = LOGICAL_HEIGHT;
+        const ctx = logicalCanvas.getContext('2d');
+        
+        function getColorByTemp(temp, type) {
+            const def = ELEMENTS[type];
+
+            // Define base colors for each element
+            const BASE_COLORS = {
+                [E.SAND]: [242, 209, 107], // Light Sand Yellow
+                [E.WATER]: [70, 130, 180], // Steel Blue
+                [E.OIL]: [40, 40, 20],     // Dark Olive
+                [E.STONE]: [100, 100, 100],  // Gray
+                [E.WOOD]: [139, 69, 19],    // Saddle Brown
+                [E.LAVA]: [255, 69, 0],     // Orange-Red
+                [E.SALT]: [240, 240, 240],   // Off-white
+                [E.MUD]: [80, 50, 20],      // Dark Brown
+                [E.GLASS]: [180, 210, 255]  // Pale Blue (transparent feel)
+            };
+
+            if (type === E.EMPTY) {
+                return 'rgba(0,0,0,0)';
+            }
+            if (type === E.WALL) {
+                return 'rgb(70,70,70)';
+            }
+            if (type === E.SMOKE) {
+                const colorRng = rng();
+                return `rgba(${60+colorRng(10)},${60+colorRng(10)},${60+colorRng(10)}, 0.8)`;
+            }
+            if (type === E.STEAM) {
+                const colorRng = rng();
+                return `rgba(${200+colorRng(30)},${220+colorRng(30)},${240+colorRng(15)}, 0.7)`;
+            }
+            if (type === E.ACID) {
+                const colorRng = rng();
+                return `rgb(${120+colorRng(40)},${220+colorRng(20)},${90+colorRng(20)})`;
+            }
+            if (type === E.BLAZE) {
+                const colorRng = rng();
+                 return `rgb(${240+colorRng(15)},${120+colorRng(60)},${colorRng(50)})`;
+            }
+
+            // For all other particles, use base color with temp tinting
+            const baseColor = BASE_COLORS[type];
+            if (!baseColor) return 'rgba(0,0,0,0)';
+
+            const minTemp = BASE_TEMP;
+            const maxTemp = def.meltTemp || 2000;
+            const normalizedTemp = Math.min(1, Math.max(0, (temp - minTemp) / (maxTemp - minTemp)));
+
+            const r = Math.min(255, baseColor[0] + (normalizedTemp * 50));
+            const g = Math.min(255, baseColor[1] + (normalizedTemp * 50));
+            const b = Math.min(255, baseColor[2] + (normalizedTemp * 50));
+            
+            return `rgb(${r}, ${g}, ${b})`;
+        }
+
+        function setupCanvas() {
+            const container = document.querySelector('.w-full.max-w-6xl');
+            const toolbar = document.querySelector('.toolbar');
+            const header = document.querySelector('h1');
+            const hint = document.querySelector('p');
+            if (!container || !toolbar || !header || !hint) return;
+
+            const verticalPadding = 32;
+            const otherElementsHeight = toolbar.offsetHeight + header.offsetHeight + hint.offsetHeight + 40;
+            const availableHeight = window.innerHeight - otherElementsHeight - verticalPadding;
+            const availableWidth = container.clientWidth;
+
+            const scaleX = Math.floor(availableWidth / LOGICAL_WIDTH);
+            const scaleY = Math.floor(availableHeight / LOGICAL_HEIGHT);
+            const SCALE = Math.max(1, Math.min(scaleX, scaleY));
+
+            displayCanvas.width = LOGICAL_WIDTH * SCALE;
+            displayCanvas.height = LOGICAL_HEIGHT * SCALE;
+        }
+
+        // --- WORLD STATE ---
+        let grid;
+        let updatedThisFrame;
+        let tick = 0;
+        const rng = (seed = 1337) => { let s = (seed >>> 0) || 1; return (n = 1) => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return Math.abs(s) % n; }; };
+        let worldRand = rng(Date.now());
+        
+        function createParticle(type) {
+            if (type === E.EMPTY) return null;
+            const def = ELEMENTS[type];
+            const particle = { type, temp: def.temp || BASE_TEMP };
+            if (def.ephemeral) {
+                particle.life = (def.life || 0) + worldRand(def.lifeRange || 1);
+            }
+            return particle;
+        }
+        
+        function resetWorld() {
+            grid = new Array(LOGICAL_WIDTH).fill(null).map(() => new Array(LOGICAL_HEIGHT).fill(null));
+            updatedThisFrame = new Array(LOGICAL_WIDTH).fill(false).map(() => new Array(LOGICAL_HEIGHT).fill(false));
+            tick = 0;
+        }
+
+        // --- SIMULATION LOGIC ---
+        function get(x, y) {
+            if (x < 0 || x >= LOGICAL_WIDTH || y < 0 || y >= LOGICAL_HEIGHT) return { type: E.WALL };
+            return grid[x][y];
+        }
+
+        function set(x, y, particle) {
+            if (x >= 0 && x < LOGICAL_WIDTH && y >= 0 && y >= 0 && y < LOGICAL_HEIGHT) {
+                grid[x][y] = particle;
+            }
+        }
+
+        function swap(x1, y1, x2, y2) {
+            const p1 = grid[x1][y1];
+            const p2 = get(x2, y2);
+            set(x1, y1, p2 && p2.type !== E.WALL ? p2 : null);
+            set(x2, y2, p1);
+            if (x2 >= 0 && x2 < LOGICAL_WIDTH && y2 >= 0 && y2 < LOGICAL_HEIGHT) {
+                updatedThisFrame[x2][y2] = true;
+            }
+        }
+
+        function density(type) { return ELEMENTS[type]?.density ?? 0; }
+        
+        function processHeatTransfer(x, y, p) {
+            if (ELEMENTS[p.type].state === 'solid' || ELEMENTS[p.type].state === 'liquid') {
+                for (let ny = y - 1; ny <= y + 1; ny++) {
+                    for (let nx = x - 1; nx <= x + 1; nx++) {
+                        if (nx === x && ny === y) continue;
+                        const neighbor = get(nx, ny);
+                        if (neighbor !== null && neighbor.type !== E.EMPTY && neighbor.type !== E.WALL) {
+                            const tempDiff = p.temp - neighbor.temp;
+                            if (tempDiff > 0) {
+                                const heatToTransfer = tempDiff * HEAT_TRANSFER_RATE * (ELEMENTS[p.type].heatCapacity / ELEMENTS[neighbor.type].heatCapacity);
+                                p.temp -= heatToTransfer;
+                                neighbor.temp += heatToTransfer;
+                            }
+                        }
+                    }
+                }
+            } else if (ELEMENTS[p.type].state === 'gas' && p.type !== E.BLAZE) {
+                // Gas particles cool down over time
+                if (p.temp > BASE_TEMP) {
+                    p.temp *= 0.95;
+                }
+            }
+        }
+        
+        function processCombustion(x, y, p) {
+            const def = ELEMENTS[p.type];
+            if (def.combusts && p.temp >= def.ignitionTemp) {
+                 if (worldRand(2) === 0) {
+                     set(x, y, createParticle(E.BLAZE)); // Turn into a blaze particle
+                     for (let ny = y - 1; ny <= y + 1; ny++) {
+                         for (let nx = x - 1; nx <= x + 1; nx++) {
+                              if (nx === x && ny === y) continue;
+                              const neighbor = get(nx, ny);
+                              if (neighbor !== null && ELEMENTS[neighbor.type].combusts && neighbor.temp < def.ignitionTemp) {
+                                  neighbor.temp = def.ignitionTemp + 1; // Ignite neighbor
+                              }
+                         }
+                     }
+                 }
+            }
+        }
+        
+        function processMeltingAndBoiling(x, y, p) {
+            const def = ELEMENTS[p.type];
+            // Melting
+            if (def.meltTemp && p.temp >= def.meltTemp) {
+                if (def.state === 'solid') {
+                    if (p.type === E.SAND) set(x, y, createParticle(E.GLASS));
+                    if (p.type === E.STONE) set(x, y, createParticle(E.LAVA));
+                    if (p.type === E.SALT) set(x, y, createParticle(E.LAVA));
+                }
+            }
+            // Boiling
+            if (def.boilTemp && p.temp >= def.boilTemp) {
+                if (def.state === 'liquid' && p.type === E.WATER) {
+                    set(x, y, createParticle(E.STEAM));
+                }
+            }
+        }
+
+        function processInteractions(x, y, p) {
+            // Check for interactions with all 8 neighbors
+            for (let ny = y - 1; ny <= y + 1; ny++) {
+                for (let nx = x - 1; nx <= x + 1; nx++) {
+                    if (nx === x && ny === y) continue;
+                    const neighbor = get(nx, ny);
+                    if (neighbor === null || neighbor.type === E.EMPTY || neighbor.type === E.WALL) continue;
+                    
+                    // Water + Sand -> Mud
+                    if ((p.type === E.WATER && neighbor.type === E.SAND) || (p.type === E.SAND && neighbor.type === E.WATER)) {
+                        set(x, y, createParticle(E.MUD));
+                        set(nx, ny, createParticle(E.MUD));
+                    }
+                    
+                    // Water + Salt -> Salt dissolves into water (salt particle disappears)
+                    if ((p.type === E.WATER && neighbor.type === E.SALT) || (p.type === E.SALT && neighbor.type === E.WATER)) {
+                        if (p.type === E.SALT) set(x, y, createParticle(E.EMPTY));
+                        if (neighbor.type === E.SALT) set(nx, ny, createParticle(E.EMPTY));
+                    }
+
+                    // Water + Blaze -> Steam & Extinguish
+                    if (p.type === E.WATER && neighbor.type === E.BLAZE) {
+                        set(nx, ny, createParticle(E.STEAM));
+                        set(x, y, createParticle(E.EMPTY));
+                    } else if (p.type === E.BLAZE && neighbor.type === E.WATER) {
+                        set(x, y, createParticle(E.STEAM));
+                        set(nx, ny, createParticle(E.EMPTY));
+                    }
+                    
+                    // Lava + Water -> Stone
+                    if ((p.type === E.LAVA && neighbor.type === E.WATER) || (p.type === E.WATER && neighbor.type === E.LAVA)) {
+                        if (p.type === E.LAVA) set(x, y, createParticle(E.STONE));
+                        if (neighbor.type === E.LAVA) set(nx, ny, createParticle(E.STONE));
+                        if (p.type === E.WATER) set(x, y, createParticle(E.STEAM));
+                        if (neighbor.type === E.WATER) set(nx, ny, createParticle(E.STEAM));
+                    }
+
+                    // Acid eats solids (increased probability)
+                    if (p.type === E.ACID && ELEMENTS[neighbor.type].state === 'solid' && neighbor.type !== E.WALL) {
+                        if (worldRand(5) === 0) set(nx, ny, createParticle(E.EMPTY));
+                    }
+                }
+            }
+        }
+
+        function update() {
+            for (let i = 0; i < LOGICAL_WIDTH; i++) updatedThisFrame[i].fill(false);
+
+            for (let y = LOGICAL_HEIGHT - 1; y >= 0; y--) {
+                const scanLeft = (tick + y) % 2 === 0;
+                for (let i = 0; i < LOGICAL_WIDTH; i++) {
+                    const x = scanLeft ? i : LOGICAL_WIDTH - 1 - i;
+                    const p = grid[x][y];
+                    if (p === null || updatedThisFrame[x][y]) continue;
+                    
+                    // The processing logic was moved outside of the switch statement
+                    // so it applies to all particles, not just movable ones.
+                    processHeatTransfer(x, y, p);
+                    processCombustion(x, y, p);
+                    processMeltingAndBoiling(x, y, p);
+                    processInteractions(x, y, p);
+
+                    if (p.life !== undefined) {
+                        p.life--;
+                        if (p.life <= 0) {
+                            set(x, y, (p.type === E.BLAZE) ? createParticle(E.SMOKE) : null);
+                            continue;
+                        }
+                    }
+
+                    // The switch statement now only handles movement based on particle state
+                    const belowY = y + 1;
+                    const pBelow = get(x, belowY);
+                    const dir = worldRand(2) ? 1 : -1;
+
+                    switch (ELEMENTS[p.type].state) {
+                        case 'solid':
+                            if (p.type === E.SAND || p.type === E.SALT || p.type === E.MUD) {
+                                if (pBelow === null || density(pBelow.type) < density(p.type)) {
+                                    swap(x, y, x, belowY);
+                                } else {
+                                    const pDiag1 = get(x + dir, belowY);
+                                    if (pDiag1 === null || density(pDiag1.type) < density(p.type)) {
+                                        swap(x, y, x + dir, belowY);
+                                    } else {
+                                        const pDiag2 = get(x - dir, belowY);
+                                        if (pDiag2 === null || density(pDiag2.type) < density(p.type)) {
+                                            swap(x, y, x - dir, belowY);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        case 'liquid':
+                            if (pBelow === null || density(pBelow.type) < density(p.type)) {
+                                swap(x, y, x, belowY);
+                            } else {
+                                const pDiag1 = get(x + dir, belowY);
+                                if (pDiag1 === null || density(pDiag1.type) < density(p.type)) {
+                                    swap(x, y, x + dir, belowY);
+                                } else {
+                                    const pDiag2 = get(x - dir, belowY);
+                                    if (pDiag2 === null || density(pDiag2.type) < density(p.type)) {
+                                        swap(x, y, x - dir, belowY);
+                                    } else {
+                                        const pSide1 = get(x + dir, y);
+                                        if (pSide1 === null) swap(x, y, x + dir, y);
+                                        else {
+                                            const pSide2 = get(x - dir, y);
+                                            if (pSide2 === null) swap(x, y, x - dir, y);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        case 'gas':
+                            const aboveY = y - 1;
+                            const pAbove = get(x, aboveY);
+                            if (pAbove === null || density(pAbove.type) > density(p.type)) {
+                                swap(x, y, x, aboveY);
+                            } else {
+                                const pDiag1 = get(x + dir, aboveY);
+                                if (pDiag1 === null || density(pDiag1.type) > density(p.type)) {
+                                    swap(x, y, x + dir, aboveY);
+                                } else {
+                                    const pDiag2 = get(x - dir, aboveY);
+                                    if (pDiag2 === null || density(pDiag2.type) > density(p.type)) {
+                                        swap(x, y, x - dir, aboveY);
+                                    } else {
+                                        const pSide1 = get(x + dir, y);
+                                        if (pSide1 === null) swap(x, y, x + dir, y);
+                                        else {
+                                            const pSide2 = get(x - dir, y);
+                                            if (pSide2 === null) swap(x, y, x - dir, y);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                    }
+                }
+            }
+            tick++;
+        }
+
+        // --- RENDERING ---
+        function draw() {
+            ctx.clearRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
+            const imageData = ctx.createImageData(LOGICAL_WIDTH, LOGICAL_HEIGHT);
+            const data = imageData.data;
+            const colorRng = rng();
+            for (let y = 0; y < LOGICAL_HEIGHT; y++) {
+                for (let x = 0; x < LOGICAL_WIDTH; x++) {
+                    const p = grid[x][y];
+                    const offset = (y * LOGICAL_WIDTH + x) * 4;
+                    if (p !== null) {
+                        const colorStr = getColorByTemp(p.temp, p.type);
+                        // Updated regex to be more robust to whitespace
+                        const match = colorStr.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(,([\d.]+))?\s*\)/);
+                        if (match) {
+                            data[offset] = parseInt(match[1]);
+                            data[offset + 1] = parseInt(match[2]);
+                            data[offset + 2] = parseInt(match[3]);
+                            data[offset + 3] = match[5] ? parseFloat(match[5]) * 255 : 255;
+                        } else {
+                            // Also update HSL regex for robustness
+                            const hslMatch = colorStr.match(/hsl\(\s*(\d+)\s*,\s*(\d+)%\s*,\s*(\d+)%\s*\)/);
+                            if (hslMatch) {
+                                const h = parseInt(hslMatch[1]);
+                                const s = parseInt(hslMatch[2]);
+                                const l = parseInt(hslMatch[3]);
+                                const rgb = hslToRgb(h, s, l);
+                                data[offset] = rgb[0];
+                                data[offset + 1] = rgb[1];
+                                data[offset + 2] = rgb[2];
+                                data[offset + 3] = 255;
+                            }
+                        }
+                    } else {
+                        data[offset + 3] = 0;
+                    }
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // HSL to RGB conversion helper
+        function hslToRgb(h, s, l) {
+            s /= 100;
+            l /= 100;
+            let c = (1 - Math.abs(2 * l - 1)) * s,
+                x = c * (1 - Math.abs((h / 60) % 2 - 1)),
+                m = l - c / 2,
+                r = 0,
+                g = 0,
+                b = 0;
+            if (0 <= h && h < 60) { r = c; g = x; b = 0; }
+            else if (60 <= h && h < 120) { r = x; g = c; b = 0; }
+            else if (120 <= h && h < 180) { r = 0; g = c; b = x; }
+            else if (180 <= h && h < 240) { r = 0; g = x; b = c; }
+            else if (240 <= h && h < 300) { r = x; g = 0; b = c; }
+            else if (300 <= h && h < 360) { r = c; g = 0; b = x; }
+            r = Math.round((r + m) * 255);
+            g = Math.round((g + m) * 255);
+            b = Math.round((b + m) * 255);
+            return [r, g, b];
+        }
+
+        function render() {
+            draw();
+            displayCtx.imageSmoothingEnabled = false;
+            displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
+            displayCtx.drawImage(logicalCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+        }
+
+        // --- UI & CONTROLS ---
+        let running = true, brush = 8, currentElem = E.SAND, eyedropper = false, painting = false;
+        const ui = {
+            playPause: document.getElementById('playPause'),
+            step: document.getElementById('step'),
+            clear: document.getElementById('clear'),
+            fps: document.getElementById('fps'),
+            brush: document.getElementById('brush'),
+            brushVal: document.getElementById('brushVal'),
+            eyedrop: document.getElementById('eyedrop'),
+            palette: document.getElementById('palette'),
+            save: document.getElementById('save'),
+            loadInput: document.getElementById('loadInput'),
+        };
+
+        const paletteButtons = {};
+        PALETTE.forEach(type => {
+            const btn = document.createElement('button');
+            btn.textContent = ELEMENTS[type].name;
+            btn.className = 'btn palette-btn';
+            btn.onclick = () => { currentElem = type; document.querySelectorAll('.palette-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); eyedropper = false; ui.eyedrop.classList.remove('active'); };
+            ui.palette.appendChild(btn);
+            paletteButtons[type] = btn;
+        });
+        paletteButtons[currentElem].classList.add('active');
+
+        ui.playPause.onclick = () => { running = !running; ui.playPause.textContent = running ? 'Pause' : 'Play'; };
+        ui.step.onclick = () => { if (!running) { update(); render(); } };
+        ui.clear.onclick = resetWorld;
+        ui.brush.oninput = () => { brush = parseInt(ui.brush.value); ui.brushVal.textContent = brush; };
+        ui.eyedrop.onclick = () => { eyedropper = !eyedropper; ui.eyedrop.classList.toggle('active', eyedropper); };
+        
+        document.querySelectorAll('[data-seed]').forEach(btn => {
+            btn.onclick = () => {
+                const type = btn.dataset.seed;
+                if (type === 'rain') for (let x = 0; x < LOGICAL_WIDTH; x++) if (Math.random() < 0.2) paint(x, 1 + Math.floor(Math.random() * 10), 1, E.WATER);
+                else if (type === 'pile') for (let i = 0; i < LOGICAL_WIDTH * 0.4; i++) paint(Math.floor(Math.random() * LOGICAL_WIDTH), Math.floor(LOGICAL_HEIGHT * 0.2 + Math.random() * LOGICAL_HEIGHT * 0.3), 1 + Math.floor(Math.random() * 3), E.SAND);
+                else if (type === 'oilpool') for (let i = 0; i < LOGICAL_WIDTH * 0.3; i++) paint(Math.floor(Math.random() * LOGICAL_WIDTH), LOGICAL_HEIGHT - 5 - Math.floor(Math.random() * 5), 2, E.OIL);
+            };
+        });
+
+        ui.save.onclick = () => {
+            const simplifiedGrid = grid.flat().map(p => p ? { t: p.type, l: p.life, temp: p.temp } : 0);
+            const payload = JSON.stringify({ w: LOGICAL_WIDTH, h: LOGICAL_HEIGHT, cells: simplifiedGrid });
+            const blob = new Blob([payload], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob); a.download = `powder-save-${Date.now()}.json`; a.click(); URL.revokeObjectURL(a.href);
+        };
+        ui.loadInput.onchange = (e) => {
+            const file = e.target.files[0]; if (!file) return; const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const data = JSON.parse(reader.result);
+                    if (data.w === LOGICAL_WIDTH && data.h === LOGICAL_HEIGHT) {
+                        resetWorld();
+                        for (let i = 0; i < data.cells.length; i++) {
+                            const cellData = data.cells[i];
+                            if (cellData !== 0) {
+                                const x = i % LOGICAL_WIDTH; const y = Math.floor(i / LOGICAL_WIDTH);
+                                const p = createParticle(cellData.t); if (p) { if (cellData.l) p.life = cellData.l; if (cellData.temp) p.temp = cellData.temp; }
+                                grid[x][y] = p;
+                            }
+                        }
+                    } else { alert('Save file dimensions do not match current world.'); }
+                } catch (err) { alert('Failed to load save file.'); console.error(err); }
+            };
+            reader.readAsText(file); e.target.value = '';
+        };
+
+        function paint(x, y, radius, type) {
+            const rSq = radius * radius;
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    if (dx * dx + dy * dy <= rSq) {
+                        set(x + dx, y + dy, createParticle(type));
+                    }
+                }
+            }
+        }
+
+        let lastPos = { x: 0, y: 0 };
+        function getCanvasPos(evt) {
+            const rect = displayCanvas.getBoundingClientRect();
+            const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+            const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+            return {
+                x: Math.floor((clientX - rect.left) / rect.width * LOGICAL_WIDTH),
+                y: Math.floor((clientY - rect.top) / rect.height * LOGICAL_HEIGHT)
+            };
+        }
+
+        function drawLine(x0, y0, x1, y1) {
+            let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+            let dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+            let err = dx + dy, e2;
+            while (true) {
+                if (eyedropper) {
+                    const p = get(x0, y0);
+                    if (p && p.type !== E.EMPTY) {
+                        currentElem = p.type;
+                        document.querySelectorAll('.palette-btn').forEach(b => b.classList.remove('active'));
+                        if (paletteButtons[currentElem]) paletteButtons[currentElem].classList.add('active');
+                    }
+                } else { paint(x0, y0, brush, currentElem); }
+                if (x0 === x1 && y0 === y1) break;
+                e2 = 2 * err;
+                if (e2 >= dy) { err += dy; x0 += sx; }
+                if (e2 <= dx) { err += dx; y0 += sy; }
+            }
+        }
+        
+        const downHandler = (e) => { e.preventDefault(); painting = true; const pos = getCanvasPos(e); lastPos = pos; drawLine(pos.x, pos.y, pos.x, pos.y); };
+        const moveHandler = (e) => { if (!painting) return; e.preventDefault(); const pos = getCanvasPos(e); drawLine(lastPos.x, lastPos.y, pos.x, pos.y); lastPos = pos; };
+        const upHandler = () => { painting = false; };
+        
+        displayCanvas.addEventListener('pointerdown', downHandler);
+        window.addEventListener('pointermove', moveHandler);
+        window.addEventListener('pointerup', upHandler);
+        window.addEventListener('pointerleave', upHandler);
+
+        // --- MAIN LOOP ---
+        let lastTime = 0, acc = 0, frameCount = 0, fpsTimer = 0;
+        function loop(time) {
+            const dt = (time - lastTime) || 0;
+            lastTime = time; acc += dt; frameCount++; fpsTimer += dt;
+            while (acc >= TICK_MS) { if (running) update(); acc -= TICK_MS; }
+            render();
+            if (fpsTimer >= 500) { ui.fps.textContent = Math.round((frameCount * 1000) / fpsTimer); frameCount = 0; fpsTimer = 0; }
+            requestAnimationFrame(loop);
+        }
+
+        // --- START ---
+        window.addEventListener('DOMContentLoaded', () => {
+            setupCanvas();
+            resetWorld();
+            requestAnimationFrame(loop);
+        });
+        window.addEventListener('resize', setupCanvas);
+    </script>
+</body>
+</html>
