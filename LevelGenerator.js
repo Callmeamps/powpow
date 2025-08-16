@@ -1,19 +1,27 @@
 import { E } from './MaterialRegistry.js';
+import { createNoise3D } from 'simplex-noise'; // You may need to install this: npm install simplex-noise
+
 
 // Utility functions
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 class Rect {
-  constructor(x,y,w,h){ this.x=x; this.y=y; this.w=w; this.h=h; }
-  intersects(o){
+    constructor(x,y,w,h){ this.x=x; this.y=y; this.w=w; this.h=h; }
+    intersects(o){
     return !(this.x+this.w <= o.x || o.x+o.w <= this.x || this.y+this.h <= o.y || o.y+o.h <= this.y);
-  }
+    }
 }
 
 export class LevelGenerator {
     constructor(params) {
         this.params = params;
-        this.width = params.GRID_WIDTH;
-        this.height = params.GRID_HEIGHT;
+        // The generator's internal width/height is now the SMALL blueprint size
+        this.width = params.BLUEPRINT_WIDTH;
+        this.height = params.BLUEPRINT_HEIGHT;
+        // NEW: Initialize the noise generator
+        this.noise3D = createNoise3D();
+        // this.simplex = new SimplexNoise(); // ADD THIS LINE
+
+
         this.blueprint = Array(this.width).fill(0).map(() => Array(this.height).fill(0));
         this.regions = Array(this.width).fill(0).map(() => Array(this.height).fill(null));
         this.currentRegion = -1;
@@ -22,7 +30,7 @@ export class LevelGenerator {
     }
     
     generate(grid) {
-        // STEP 1: Generate Blueprint
+        // STEP 1: Generate the low-resolution blueprint. This logic is the same as before.
         this._addRooms();
         for (let y = 1; y < this.height; y += 2) {
             for (let x = 1; x < this.width; x += 2) {
@@ -31,36 +39,71 @@ export class LevelGenerator {
         }
         this._connectRegions();
         this._removeDeadEnds();
-        this._thickenCorridors();
 
-        // STEP 2: Transfer to 3D Grid
+        // --- STEP 2: "Stamp" the blueprint onto the high-resolution final grid ---
+        const scale = this.params.TILE_SCALE;
         const mainLayer = Math.floor(grid.depth / 2);
-        for (let x = 0; x < this.width; x++) {
-            for (let y = 0; y < this.height; y++) {
-                const isFloor = this.blueprint[x][y] === 1;
-                if (!isFloor && Math.random() < this.params.FOREGROUND_WALL_CHANCE) grid.set(x, y, mainLayer - 1, E.STONE);
-                grid.set(x, y, mainLayer, isFloor ? E.EMPTY : E.STONE);
-                grid.set(x, y, mainLayer + 1, E.STONE);
-                if (isFloor) grid.set(x, y, mainLayer + 1, E.EMPTY);
+
+        for (let bpX = 0; bpX < this.width; bpX++) {
+            for (let bpY = 0; bpY < this.height; bpY++) {
+                const isFloor = this.blueprint[bpX][bpY] === 1;
+                const baseMaterial = isFloor ? E.EMPTY : E.STONE;
+
+                // For each blueprint tile, fill a scaled block of pixels in the main grid
+                for (let pX = 0; pX < scale; pX++) {
+                    for (let pY = 0; pY < scale; pY++) {
+                        const finalX = bpX * scale + pX;
+                        const finalY = bpY * scale + pY;
+                        
+                        // Main playable layer
+                        grid.set(finalX, finalY, mainLayer, baseMaterial);
+
+                        // Background layers
+                        grid.set(finalX, finalY, mainLayer + 1, E.STONE);
+                        if (isFloor) grid.set(finalX, finalY, mainLayer + 1, E.EMPTY);
+
+                        // Foreground layer
+                        if (!isFloor && Math.random() < this.params.FOREGROUND_WALL_CHANCE) {
+                            grid.set(finalX, finalY, mainLayer - 1, E.STONE);
+                        }
+                    }
+                }
             }
         }
 
-        // STEP 3: Dress the Scene
+        // --- NEW STEP 3: Carve 3D Caverns with Noise ---
+        // This iterates through the actual pixel grid, not the blueprint.
+        this._carveNoiseCaverns(grid);
+
+        // --- NEW STEP 4: Smooth the layers to make them look more natural ---
+        this._smoothLayers(grid);
+
+
+        // STEP 5: Dress the scene, making sure to scale all coordinates
         for (const room of this.rooms) {
             if (Math.random() < this.params.ROOM_FLUID_CHANCE) {
                 const fluidType = Math.random() < this.params.LAVA_CHANCE ? E.LAVA : E.WATER;
                 const fluidHeight = randInt(1, Math.floor(room.h / 3));
-                for (let ry = room.y + room.h - fluidHeight; ry < room.y + room.h; ry++) {
-                    for (let rx = room.x; rx < room.x + room.w; rx++) {
-                        grid.set(rx, ry, mainLayer, fluidType);
+                
+                // Iterate using blueprint coords and scale them up
+                for (let bpY = room.y + room.h - fluidHeight; bpY < room.y + room.h; bpY++) {
+                    for (let bpX = room.x; bpX < room.x + room.w; bpX++) {
+                        // Fill a scaled block for each fluid tile
+                        for (let pX = 0; pX < scale; pX++) {
+                            for (let pY = 0; pY < scale; pY++) {
+                                grid.set(bpX * scale + pX, bpY * scale + pY, mainLayer, fluidType);
+                            }
+                        }
                     }
                 }
             }
+            // Sand piles also need to be placed using scaled coordinates
             if (Math.random() < this.params.ROOM_SAND_PILE_CHANCE) {
-                const pileX = room.x + randInt(0, room.w - 1);
-                for(let i=0; i < randInt(20, 50); i++) {
-                    const px = pileX + randInt(-4, 4);
-                    const py = room.y + room.h - 1 - randInt(0, 5);
+                const pileCenterX = (room.x + randInt(0, room.w - 1)) * scale;
+                const pileTopY = (room.y + room.h) * scale;
+                for(let i=0; i < randInt(20, 50) * scale; i++) { // More sand for larger scales
+                    const px = pileCenterX + randInt(-4 * scale, 4 * scale);
+                    const py = pileTopY - randInt(0, 5 * scale);
                     if(grid.get(px,py,mainLayer) === E.EMPTY) grid.set(px, py, mainLayer, E.SAND);
                 }
             }
@@ -101,21 +144,113 @@ export class LevelGenerator {
         }
     }
 
-    _thickenCorridors() {
-        for (let i = 0; i < this.params.CORRIDOR_THICKENING_PASSES; i++) {
-            let tempBlueprint = this.blueprint.map(arr => arr.slice());
-            for (let x = 1; x < this.width - 1; x++) {
-                for (let y = 1; y < this.height - 1; y++) {
-                    if (this.blueprint[x][y] === 0) {
-                        const isHorizontal = this.blueprint[x-1][y] === 1 && this.blueprint[x+1][y] === 1;
-                        const isVertical = this.blueprint[x][y-1] === 1 && this.blueprint[x][y+1] === 1;
-                        if (isHorizontal || isVertical) tempBlueprint[x][y] = 1;
+ // --- NEW METHOD: Smooth Layers with Cellular Automata ---
+    _smoothLayers(grid) {
+        const mainLayer = Math.floor(grid.depth / 2);
+
+        for (let i = 0; i < this.params.SMOOTHING_PASSES; i++) {
+            // We read from the grid and write to a temporary copy to avoid weird cascading effects.
+            let tempGrid = new Uint8Array(grid.cells);
+
+            for (let z = 0; z < grid.depth; z++) {
+                if (z === mainLayer) continue; // Don't smooth the main layer
+
+                for (let y = 1; y < grid.height - 1; y++) {
+                    for (let x = 1; x < grid.width - 1; x++) {
+                        // Count neighbors in a 3x3 square on the same layer
+                        let wallNeighbors = 0;
+                        for (let ny = -1; ny <= 1; ny++) {
+                            for (let nx = -1; nx <= 1; nx++) {
+                                if (nx === 0 && ny === 0) continue;
+                                if (grid.get(x + nx, y + ny, z) === E.STONE) {
+                                    wallNeighbors++;
+                                }
+                            }
+                        }
+
+                        const index = grid.getIndex(x, y, z);
+                        // Rule: If a wall has 3 or fewer neighbors, it's probably a thin pillar, so remove it.
+                        if (grid.cells[index] === E.STONE && wallNeighbors <= 3) {
+                            tempGrid[index] = E.EMPTY;
+                        }
+                        // Rule: If empty space has 5 or more neighbors, it's a small hole, so fill it.
+                        else if (grid.cells[index] === E.EMPTY && wallNeighbors >= 5) {
+                            tempGrid[index] = E.STONE;
+                        }
                     }
                 }
             }
-            this.blueprint = tempBlueprint;
+            // After checking every cell, apply the changes back to the main grid for the next pass.
+            grid.cells.set(tempGrid);
         }
     }
+
+// --- NEW METHOD: Carve 3D Caverns with Simplex Noise ---
+    _carveNoiseCaverns(grid) {
+        const mainLayer = Math.floor(grid.depth / 2);
+        const noiseScale = this.params.NOISE_SCALE / this.params.TILE_SCALE; // Adjust noise scale by tile size
+        const threshold = this.params.NOISE_THRESHOLD;
+
+        for (let z = 0; z < grid.depth; z++) {
+            // We do NOT carve the main playable layer. We want to preserve its design.
+            if (z === mainLayer) continue;
+
+            for (let y = 0; y < grid.height; y++) {
+                for (let x = 0; x < grid.width; x++) {
+                    // Sample the 3D noise field
+                    const noiseValue = this.noise3D(x / noiseScale, y / noiseScale, z / (noiseScale / 2));
+                    
+                    // If the noise value is above our threshold, carve out the stone.
+                    if (noiseValue > threshold) {
+                        grid.set(x, y, z, E.EMPTY);
+                    }
+                }
+            }
+        }
+    }
+
+// --- NEW METHOD: Smooth Layers with Cellular Automata ---
+    _smoothLayers(grid) {
+        const mainLayer = Math.floor(grid.depth / 2);
+
+        for (let i = 0; i < this.params.SMOOTHING_PASSES; i++) {
+            // We read from the grid and write to a temporary copy to avoid weird cascading effects.
+            let tempGrid = new Uint8Array(grid.cells);
+
+            for (let z = 0; z < grid.depth; z++) {
+                if (z === mainLayer) continue; // Don't smooth the main layer
+
+                for (let y = 1; y < grid.height - 1; y++) {
+                    for (let x = 1; x < grid.width - 1; x++) {
+                        // Count neighbors in a 3x3 square on the same layer
+                        let wallNeighbors = 0;
+                        for (let ny = -1; ny <= 1; ny++) {
+                            for (let nx = -1; nx <= 1; nx++) {
+                                if (nx === 0 && ny === 0) continue;
+                                if (grid.get(x + nx, y + ny, z) === E.STONE) {
+                                    wallNeighbors++;
+                                }
+                            }
+                        }
+
+                        const index = grid.getIndex(x, y, z);
+                        // Rule: If a wall has 3 or fewer neighbors, it's probably a thin pillar, so remove it.
+                        if (grid.cells[index] === E.STONE && wallNeighbors <= 3) {
+                            tempGrid[index] = E.EMPTY;
+                        }
+                        // Rule: If empty space has 5 or more neighbors, it's a small hole, so fill it.
+                        else if (grid.cells[index] === E.EMPTY && wallNeighbors >= 5) {
+                            tempGrid[index] = E.STONE;
+                        }
+                    }
+                }
+            }
+            // After checking every cell, apply the changes back to the main grid for the next pass.
+            grid.cells.set(tempGrid);
+        }
+    }
+
+
 
     _startRegion() { this.currentRegion++; }
     _carve(x, y) { this.blueprint[x][y] = 1; this.regions[x][y] = this.currentRegion; }
