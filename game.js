@@ -28,10 +28,10 @@ const dungeonParams = {
 
     // --- Scene Dressing & 3D ---
     GRID_DEPTH: 5,
-    ROOM_FLUID_CHANCE: 0.3,
+    ROOM_FLUID_CHANCE: 0.8,
     LAVA_CHANCE: 0.2,
     ROOM_SAND_PILE_CHANCE: 0.5,
-    FOREGROUND_WALL_CHANCE: 0.25,
+    FOREGROUND_WALL_CHANCE: 0.5,
 
         // --- NEW: 3D Noise Cavern Parameters ---
     // This controls the "zoom level" of the noise.
@@ -46,6 +46,12 @@ const dungeonParams = {
 
     // How many times to run the smoothing algorithm to clean up noise artifacts.
     SMOOTHING_PASSES: 1,
+
+    // --- NEW: Layer Similarity Threshold ---
+    // This controls how similar layers must be.
+    LAYER_SIMILARITY: 0.85,
+    VERTICAL_CONNECTOR_CHANCE: 0.4,
+
 
 };
 // ---===[ END OF CONTROL PANEL ]===---

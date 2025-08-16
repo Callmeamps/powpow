@@ -1,5 +1,5 @@
 import { E } from './MaterialRegistry.js';
-import { createNoise3D } from 'simplex-noise'; // You may need to install this: npm install simplex-noise
+import { createNoise2D } from 'simplex-noise'; // You may need to install this: npm install simplex-noise
 
 
 // Utility functions
@@ -18,114 +18,222 @@ export class LevelGenerator {
         this.width = params.BLUEPRINT_WIDTH;
         this.height = params.BLUEPRINT_HEIGHT;
         // NEW: Initialize the noise generator
-        this.noise3D = createNoise3D();
+        this.noise2D = createNoise2D();
         // this.simplex = new SimplexNoise(); // ADD THIS LINE
+        // --- NEW ---
+        this.blueprints = new Array(params.GRID_DEPTH); // An array to hold a 2D blueprint for each layer
+        this.rooms = []; // We only need to store rooms for the main layer for now
 
 
-        this.blueprint = Array(this.width).fill(0).map(() => Array(this.height).fill(0));
-        this.regions = Array(this.width).fill(0).map(() => Array(this.height).fill(null));
-        this.currentRegion = -1;
+        this.grid = null;
+        this.regions = null;
         this.rooms = [];
+        this.currentRegion = -1;
         this.directions = [ {dx:-1,dy:0}, {dx:1,dy:0}, {dx:0,dy:-1}, {dx:0,dy:1} ];
-    }
+        }
     
+    // generate(grid) {
+    //     // STEP 1: Generate the low-resolution blueprint. This logic is the same as before.
+    //     this._addRooms();
+    //     for (let y = 1; y < this.height; y += 2) {
+    //         for (let x = 1; x < this.width; x += 2) {
+    //             if (this.blueprint[x][y] === 0) this._growMaze(x, y);
+    //         }
+    //     }
+    //     this._connectRegions();
+    //     this._removeDeadEnds();
+
+    //     // --- STEP 2: "Stamp" the blueprint onto the high-resolution final grid ---
+    //     const scale = this.params.TILE_SCALE;
+    //     const mainLayer = Math.floor(grid.depth / 2);
+
+    //     for (let bpX = 0; bpX < this.width; bpX++) {
+    //         for (let bpY = 0; bpY < this.height; bpY++) {
+    //             const isFloor = this.blueprint[bpX][bpY] === 1;
+    //             const baseMaterial = isFloor ? E.EMPTY : E.STONE;
+
+    //             // For each blueprint tile, fill a scaled block of pixels in the main grid
+    //             for (let pX = 0; pX < scale; pX++) {
+    //                 for (let pY = 0; pY < scale; pY++) {
+    //                     const finalX = bpX * scale + pX;
+    //                     const finalY = bpY * scale + pY;
+                        
+    //                     // Main playable layer
+    //                     grid.set(finalX, finalY, mainLayer, baseMaterial);
+
+    //                     // Background layers
+    //                     grid.set(finalX, finalY, mainLayer + 1, E.STONE);
+    //                     if (isFloor) grid.set(finalX, finalY, mainLayer + 1, E.EMPTY);
+
+    //                     // Foreground layer
+    //                     if (!isFloor && Math.random() < this.params.FOREGROUND_WALL_CHANCE) {
+    //                         grid.set(finalX, finalY, mainLayer - 1, E.STONE);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     // --- NEW STEP 3: Carve 3D Caverns with Noise ---
+    //     // This iterates through the actual pixel grid, not the blueprint.
+    //     this._carveNoiseCaverns(grid);
+
+    //     // --- NEW STEP 4: Smooth the layers to make them look more natural ---
+    //     this._smoothLayers(grid);
+
+
+    //     // STEP 5: Dress the scene, making sure to scale all coordinates
+    //     for (const room of this.rooms) {
+    //         if (Math.random() < this.params.ROOM_FLUID_CHANCE) {
+    //             const fluidType = Math.random() < this.params.LAVA_CHANCE ? E.LAVA : E.WATER;
+    //             const fluidHeight = randInt(1, Math.floor(room.h / 3));
+                
+    //             // Iterate using blueprint coords and scale them up
+    //             for (let bpY = room.y + room.h - fluidHeight; bpY < room.y + room.h; bpY++) {
+    //                 for (let bpX = room.x; bpX < room.x + room.w; bpX++) {
+    //                     // Fill a scaled block for each fluid tile
+    //                     for (let pX = 0; pX < scale; pX++) {
+    //                         for (let pY = 0; pY < scale; pY++) {
+    //                             grid.set(bpX * scale + pX, bpY * scale + pY, mainLayer, fluidType);
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //         // Sand piles also need to be placed using scaled coordinates
+    //         if (Math.random() < this.params.ROOM_SAND_PILE_CHANCE) {
+    //             const pileCenterX = (room.x + randInt(0, room.w - 1)) * scale;
+    //             const pileTopY = (room.y + room.h) * scale;
+    //             for(let i=0; i < randInt(20, 50) * scale; i++) { // More sand for larger scales
+    //                 const px = pileCenterX + randInt(-4 * scale, 4 * scale);
+    //                 const py = pileTopY - randInt(0, 5 * scale);
+    //                 if(grid.get(px,py,mainLayer) === E.EMPTY) grid.set(px, py, mainLayer, E.SAND);
+    //             }
+    //         }
+    //     }
+    // }
+
     generate(grid) {
-        // STEP 1: Generate the low-resolution blueprint. This logic is the same as before.
+        console.log("Generating volumetric dungeon...");
+        const mainLayer = Math.floor(this.params.GRID_DEPTH / 2);
+
+        this._generateSingleBlueprint(mainLayer);
+        this._generateCorrelatedBlueprints(mainLayer);
+        this._addVerticalConnectors();
+        this._stamp3DBlueprintToGrid(grid);
+        // this._dressAllScenes(grid); // We can re-enable this later
+        console.log("Generation complete.");
+    }
+
+    // --- This is the main "manager" function that was broken ---
+    _generateSingleBlueprint(layerIndex) {
+        // CRITICAL FIX: Set the INSTANCE state for the generator methods to use
+        this.grid = Array(this.width).fill(0).map(() => Array(this.height).fill(0));
+        this.regions = Array(this.width).fill(0).map(() => Array(this.height).fill(null));
+        this.rooms = [];
+        this.currentRegion = -1;
+
+        // CRITICAL FIX: Call the helper methods WITHOUT passing a 'bp' object.
+        // They will now correctly use 'this.grid', 'this.regions', etc.
         this._addRooms();
         for (let y = 1; y < this.height; y += 2) {
             for (let x = 1; x < this.width; x += 2) {
-                if (this.blueprint[x][y] === 0) this._growMaze(x, y);
+                if (this.grid[x][y] === 0) this._growMaze(x, y);
             }
         }
         this._connectRegions();
         this._removeDeadEnds();
 
-        // --- STEP 2: "Stamp" the blueprint onto the high-resolution final grid ---
+        // After generation is complete, store the results
+        this.blueprints[layerIndex] = {
+            grid: this.grid,
+            rooms: this.rooms,
+        };
+    }
+
+    _generateCorrelatedBlueprints(mainLayer) {
+        for (let z = mainLayer - 1; z >= 0; z--) this._mutateBlueprint(z, this.blueprints[z + 1]);
+        for (let z = mainLayer + 1; z < this.params.GRID_DEPTH; z++) this._mutateBlueprint(z, this.blueprints[z - 1]);
+    }
+
+    _mutateBlueprint(targetLayerIndex, sourceBlueprint) {
+        const newBpGrid = sourceBlueprint.grid.map(arr => arr.slice());
+        const threshold = (1.0 - this.params.LAYER_SIMILARITY) * 0.5;
+        const noiseScale = 15.0;
+        for (let y = 1; y < this.height - 1; y++) {
+            for (let x = 1; x < this.width - 1; x++) {
+                const noiseValue = this.noise2D(x / noiseScale, y / noiseScale);
+                if (sourceBlueprint.grid[x][y] === 0 && noiseValue > threshold) newBpGrid[x][y] = 1;
+                else if (sourceBlueprint.grid[x][y] === 1 && noiseValue < -threshold) newBpGrid[x][y] = 0;
+            }
+        }
+        this.blueprints[targetLayerIndex] = { grid: newBpGrid, rooms: [] };
+    }
+    _addVerticalConnectors() {
+        const shaftSize = 1; // 1 = 2x2, 2 = 4x4 etc.
+        for (let z = 0; z < this.params.GRID_DEPTH - 1; z++) {
+            const bp1 = this.blueprints[z];
+            const bp2 = this.blueprints[z+1];
+            if (!bp1 || !bp2) continue;
+            
+            // Find overlapping empty space
+            for (let y = 1; y < this.height - shaftSize*2; y++) {
+                for (let x = 1; x < this.width - shaftSize*2; x++) {
+                    if (Math.random() < this.params.VERTICAL_CONNECTOR_CHANCE / 1000) { // low chance per-tile
+                        let isClearOnBoth = true;
+                        for(let sx=0; sx < shaftSize*2; sx++) for(let sy=0; sy < shaftSize*2; sy++) {
+                        if(bp1.grid[x+sx][y+sy] === 0 || bp2.grid[x+sx][y+sy] === 0) isClearOnBoth = false;
+                        }
+
+                        if(isClearOnBoth) {
+                        for(let sx=0; sx < shaftSize*2; sx++) for(let sy=0; sy < shaftSize*2; sy++) {
+                            // Mark as a special "shaft" tile
+                            bp1.grid[x+sx][y+sy] = 2; 
+                            bp2.grid[x+sx][y+sy] = 2; 
+                        }
+                        }
+                }
+                }
+            }
+        }
+    }
+
+    _stamp3DBlueprintToGrid(grid) {
         const scale = this.params.TILE_SCALE;
-        const mainLayer = Math.floor(grid.depth / 2);
-
-        for (let bpX = 0; bpX < this.width; bpX++) {
-            for (let bpY = 0; bpY < this.height; bpY++) {
-                const isFloor = this.blueprint[bpX][bpY] === 1;
-                const baseMaterial = isFloor ? E.EMPTY : E.STONE;
-
-                // For each blueprint tile, fill a scaled block of pixels in the main grid
-                for (let pX = 0; pX < scale; pX++) {
-                    for (let pY = 0; pY < scale; pY++) {
-                        const finalX = bpX * scale + pX;
-                        const finalY = bpY * scale + pY;
-                        
-                        // Main playable layer
-                        grid.set(finalX, finalY, mainLayer, baseMaterial);
-
-                        // Background layers
-                        grid.set(finalX, finalY, mainLayer + 1, E.STONE);
-                        if (isFloor) grid.set(finalX, finalY, mainLayer + 1, E.EMPTY);
-
-                        // Foreground layer
-                        if (!isFloor && Math.random() < this.params.FOREGROUND_WALL_CHANCE) {
-                            grid.set(finalX, finalY, mainLayer - 1, E.STONE);
+        for (let z = 0; z < this.params.GRID_DEPTH; z++) {
+            const bp = this.blueprints[z];
+            if (!bp) continue;
+            for (let bpX = 0; bpX < this.width; bpX++) {
+                for (let bpY = 0; bpY < this.height; bpY++) {
+                    const tileType = bp.grid[bpX][bpY];
+                    // Shafts (2) are always empty space, otherwise check if wall (0) or floor (1)
+                    const material = (tileType === 0) ? E.STONE : E.EMPTY; 
+                    for (let pX = 0; pX < scale; pX++) {
+                        for (let pY = 0; pY < scale; pY++) {
+                            grid.set(bpX * scale + pX, bpY * scale + pY, z, material);
                         }
                     }
                 }
             }
         }
-
-        // --- NEW STEP 3: Carve 3D Caverns with Noise ---
-        // This iterates through the actual pixel grid, not the blueprint.
-        this._carveNoiseCaverns(grid);
-
-        // --- NEW STEP 4: Smooth the layers to make them look more natural ---
-        this._smoothLayers(grid);
-
-
-        // STEP 5: Dress the scene, making sure to scale all coordinates
-        for (const room of this.rooms) {
-            if (Math.random() < this.params.ROOM_FLUID_CHANCE) {
-                const fluidType = Math.random() < this.params.LAVA_CHANCE ? E.LAVA : E.WATER;
-                const fluidHeight = randInt(1, Math.floor(room.h / 3));
-                
-                // Iterate using blueprint coords and scale them up
-                for (let bpY = room.y + room.h - fluidHeight; bpY < room.y + room.h; bpY++) {
-                    for (let bpX = room.x; bpX < room.x + room.w; bpX++) {
-                        // Fill a scaled block for each fluid tile
-                        for (let pX = 0; pX < scale; pX++) {
-                            for (let pY = 0; pY < scale; pY++) {
-                                grid.set(bpX * scale + pX, bpY * scale + pY, mainLayer, fluidType);
-                            }
-                        }
-                    }
-                }
-            }
-            // Sand piles also need to be placed using scaled coordinates
-            if (Math.random() < this.params.ROOM_SAND_PILE_CHANCE) {
-                const pileCenterX = (room.x + randInt(0, room.w - 1)) * scale;
-                const pileTopY = (room.y + room.h) * scale;
-                for(let i=0; i < randInt(20, 50) * scale; i++) { // More sand for larger scales
-                    const px = pileCenterX + randInt(-4 * scale, 4 * scale);
-                    const py = pileTopY - randInt(0, 5 * scale);
-                    if(grid.get(px,py,mainLayer) === E.EMPTY) grid.set(px, py, mainLayer, E.SAND);
-                }
-            }
-        }
     }
 
-    _addRooms() {
-        for (let i = 0; i < this.params.ROOM_TRIES; i++) {
-            const size = randInt(this.params.ROOM_MIN_SIZE_BASE, this.params.ROOM_MAX_SIZE_BASE + this.params.ROOM_EXTRA_SIZE) * 2 + 1;
-            const rectangularity = randInt(0, Math.floor(size * this.params.ROOM_RECTANGULARITY / 2)) * 2;
-            let w = size, h = size;
-            if (Math.random() < 0.5) w += rectangularity; else h += rectangularity;
-            if (w >= this.width - 2 || h >= this.height - 2) continue;
-            const x = randInt(0, Math.floor((this.width - w - 2) / 2)) * 2 + 1;
-            const y = randInt(0, Math.floor((this.height - h - 2) / 2)) * 2 + 1;
-            const rect = new Rect(x, y, w, h);
-            if (this.rooms.some(r => r.intersects(rect))) continue;
-            this.rooms.push(rect);
-            this._startRegion();
-            for (let dx = 0; dx < w; dx++) for (let dy = 0; dy < h; dy++) this._carve(rect.x + dx, rect.y + dy);
-        }
-    }
+    // _addRooms() {
+    //     for (let i = 0; i < this.params.ROOM_TRIES; i++) {
+    //         const size = randInt(this.params.ROOM_MIN_SIZE_BASE, this.params.ROOM_MAX_SIZE_BASE + this.params.ROOM_EXTRA_SIZE) * 2 + 1;
+    //         const rectangularity = randInt(0, Math.floor(size * this.params.ROOM_RECTANGULARITY / 2)) * 2;
+    //         let w = size, h = size;
+    //         if (Math.random() < 0.5) w += rectangularity; else h += rectangularity;
+    //         if (w >= this.width - 2 || h >= this.height - 2) continue;
+    //         const x = randInt(0, Math.floor((this.width - w - 2) / 2)) * 2 + 1;
+    //         const y = randInt(0, Math.floor((this.height - h - 2) / 2)) * 2 + 1;
+    //         const rect = new Rect(x, y, w, h);
+    //         if (this.rooms.some(r => r.intersects(rect))) continue;
+    //         this.rooms.push(rect);
+    //         this._startRegion();
+    //         for (let dx = 0; dx < w; dx++) for (let dy = 0; dy < h; dy++) this._carve(rect.x + dx, rect.y + dy);
+    //     }
+    // }
     
     _removeDeadEnds() {
         for (let i = 0; i < this.params.DEAD_END_REMOVAL_PASSES; i++) {
@@ -134,10 +242,10 @@ export class LevelGenerator {
                 done = true;
                 for (let x = 1; x < this.width - 1; x++) {
                     for (let y = 1; y < this.height - 1; y++) {
-                        if (this.blueprint[x][y] === 0) continue;
+                        if (this.grid[x][y] === 0) continue;
                         let exits = 0;
-                        this.directions.forEach(d => { if(this.blueprint[x+d.dx][y+d.dy] === 1) exits++; });
-                        if (exits === 1) { this.blueprint[x][y] = 0; done = false; }
+                        this.directions.forEach(d => { if(this.grid[x+d.dx][y+d.dy] === 1) exits++; });
+                        if (exits === 1) { this.grid[x][y] = 0; done = false; }
                     }
                 }
             }
@@ -209,57 +317,85 @@ export class LevelGenerator {
         }
     }
 
-// --- NEW METHOD: Smooth Layers with Cellular Automata ---
-    _smoothLayers(grid) {
-        const mainLayer = Math.floor(grid.depth / 2);
+// // --- NEW METHOD: Smooth Layers with Cellular Automata ---
+//     _smoothLayers(grid) {
+//         const mainLayer = Math.floor(grid.depth / 2);
 
-        for (let i = 0; i < this.params.SMOOTHING_PASSES; i++) {
-            // We read from the grid and write to a temporary copy to avoid weird cascading effects.
-            let tempGrid = new Uint8Array(grid.cells);
+//         for (let i = 0; i < this.params.SMOOTHING_PASSES; i++) {
+//             // We read from the grid and write to a temporary copy to avoid weird cascading effects.
+//             let tempGrid = new Uint8Array(grid.cells);
 
-            for (let z = 0; z < grid.depth; z++) {
-                if (z === mainLayer) continue; // Don't smooth the main layer
+//             for (let z = 0; z < grid.depth; z++) {
+//                 if (z === mainLayer) continue; // Don't smooth the main layer
 
-                for (let y = 1; y < grid.height - 1; y++) {
-                    for (let x = 1; x < grid.width - 1; x++) {
-                        // Count neighbors in a 3x3 square on the same layer
-                        let wallNeighbors = 0;
-                        for (let ny = -1; ny <= 1; ny++) {
-                            for (let nx = -1; nx <= 1; nx++) {
-                                if (nx === 0 && ny === 0) continue;
-                                if (grid.get(x + nx, y + ny, z) === E.STONE) {
-                                    wallNeighbors++;
-                                }
-                            }
-                        }
+//                 for (let y = 1; y < grid.height - 1; y++) {
+//                     for (let x = 1; x < grid.width - 1; x++) {
+//                         // Count neighbors in a 3x3 square on the same layer
+//                         let wallNeighbors = 0;
+//                         for (let ny = -1; ny <= 1; ny++) {
+//                             for (let nx = -1; nx <= 1; nx++) {
+//                                 if (nx === 0 && ny === 0) continue;
+//                                 if (grid.get(x + nx, y + ny, z) === E.STONE) {
+//                                     wallNeighbors++;
+//                                 }
+//                             }
+//                         }
 
-                        const index = grid.getIndex(x, y, z);
-                        // Rule: If a wall has 3 or fewer neighbors, it's probably a thin pillar, so remove it.
-                        if (grid.cells[index] === E.STONE && wallNeighbors <= 3) {
-                            tempGrid[index] = E.EMPTY;
-                        }
-                        // Rule: If empty space has 5 or more neighbors, it's a small hole, so fill it.
-                        else if (grid.cells[index] === E.EMPTY && wallNeighbors >= 5) {
-                            tempGrid[index] = E.STONE;
-                        }
-                    }
-                }
-            }
-            // After checking every cell, apply the changes back to the main grid for the next pass.
-            grid.cells.set(tempGrid);
+//                         const index = grid.getIndex(x, y, z);
+//                         // Rule: If a wall has 3 or fewer neighbors, it's probably a thin pillar, so remove it.
+//                         if (grid.cells[index] === E.STONE && wallNeighbors <= 3) {
+//                             tempGrid[index] = E.EMPTY;
+//                         }
+//                         // Rule: If empty space has 5 or more neighbors, it's a small hole, so fill it.
+//                         else if (grid.cells[index] === E.EMPTY && wallNeighbors >= 5) {
+//                             tempGrid[index] = E.STONE;
+//                         }
+//                     }
+//                 }
+//             }
+//             // After checking every cell, apply the changes back to the main grid for the next pass.
+//             grid.cells.set(tempGrid);
+//         }
+//     }
+
+
+
+_startRegion() { this.currentRegion++; }
+
+    _carve(x, y) {
+        if (this.grid && this.grid[x]) {
+            this.grid[x][y] = 1;
+            this.regions[x][y] = this.currentRegion;
         }
     }
 
-
-
-    _startRegion() { this.currentRegion++; }
-    _carve(x, y) { this.blueprint[x][y] = 1; this.regions[x][y] = this.currentRegion; }
     _canCarve(x, y, {dx, dy}) {
         const nx = x + dx * 2, ny = y + dy * 2;
         if (nx < 0 || ny < 0 || nx >= this.width || ny >= this.height) return false;
-        return this.blueprint[nx][ny] === 0;
+        return this.grid[nx][ny] === 0;
     }
-    
+
+    _addRooms() {
+        for (let i = 0; i < this.params.ROOM_TRIES; i++) {
+            const size = randInt(this.params.ROOM_MIN_SIZE_BASE, this.params.ROOM_MAX_SIZE_BASE + this.params.ROOM_EXTRA_SIZE) * 2 + 1;
+            const rectangularity = randInt(0, Math.floor(size * this.params.ROOM_RECTANGULARITY / 2)) * 2;
+            let w = size, h = size;
+            if (Math.random() < 0.5) w += rectangularity; else h += rectangularity;
+            if (w >= this.width - 2 || h >= this.height - 2) continue;
+            const x = randInt(0, Math.floor((this.width - w - 2) / 2)) * 2 + 1;
+            const y = randInt(0, Math.floor((this.height - h - 2) / 2)) * 2 + 1;
+            const rect = new Rect(x, y, w, h);
+            if (this.rooms.some(r => r.intersects(rect))) continue;
+            this.rooms.push(rect);
+            this._startRegion();
+            for (let dx = 0; dx < w; dx++) {
+                for (let dy = 0; dy < h; dy++) {
+                    this._carve(rect.x + dx, rect.y + dy);
+                }
+            }
+        }
+    }
+
     _growMaze(sx, sy) {
         let cells = [{ x: sx, y: sy }];
         this._startRegion();
@@ -286,11 +422,12 @@ export class LevelGenerator {
         }
     }
 
+
     _connectRegions() {
         let connectors = new Map();
         for (let x = 1; x < this.width - 1; x++) {
             for (let y = 1; y < this.height - 1; y++) {
-                if (this.blueprint[x][y] !== 0) continue;
+                if (this.grid[x][y] !== 0) continue;
                 let neigh = new Set();
                 this.directions.forEach(d => {
                     let r = this.regions[x + d.dx][y + d.dy];
@@ -311,7 +448,7 @@ export class LevelGenerator {
             if (connectorKeys.length === 0) break; // Stop if no connectors left
             const key = connectorKeys[randInt(0, connectorKeys.length - 1)];
             const [x, y] = key.split(',').map(Number);
-            this.blueprint[x][y] = 1;
+            this.grid[x][y] = 1;
             const regs = connectors.get(key).map(find);
             const dest = regs[0];
             const srcs = regs.slice(1);
@@ -323,7 +460,7 @@ export class LevelGenerator {
                 if (currentRegions.size > 1) return true;
                 if (Math.random() * 100 < this.params.EXTRA_CONNECTOR_CHANCE) {
                     const [cx, cy] = k.split(',').map(Number);
-                    this.blueprint[cx][cy] = 1;
+                    this.grid[cx][cy] = 1;
                 }
                 return false;
             });

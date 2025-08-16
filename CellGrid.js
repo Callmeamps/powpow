@@ -56,63 +56,52 @@ export class CellGrid {
     }
 
     update() {
-        // NEW: Update lifespans first
-        for (const [index, life] of this.lifespans.entries()) {
-            if (life <= 1) {
-                // If fire burns out, it might leave smoke
-                if (this.cells[index] === E.FIRE) {
-                    this.cells[index] = E.SMOKE;
-                    this.lifespans.set(index, MaterialRegistry.get(E.SMOKE).lifespan);
-                } else {
-                    this.cells[index] = E.EMPTY;
-                    this.lifespans.delete(index);
-                }
-            } else {
-                this.lifespans.set(index, life - 1);
-            }
-        }
-
-        // MODIFIED: Loop through all 3 dimensions
+        // Iterate through every layer of the grid
         for (let z = 0; z < this.depth; z++) {
-            for (let y = this.height - 1; y >= 0; y--) {
-                const scanLeft = Math.random() < 0.5;
+            // Iterate from bottom to top to handle gravity correctly
+            for (let y = this.height - 2; y >= 0; y--) {
+                // Alternate scan direction for more natural particle flow
                 for (let i = 0; i < this.width; i++) {
+                    const scanLeft = Math.random() < 0.5;
                     const x = scanLeft ? i : this.width - 1 - i;
                     
                     const type = this.get(x, y, z);
-                    const mat = MaterialRegistry.get(type);
-                    if (type === E.EMPTY || !mat.movable) continue;
 
-                    const belowType = this.get(x, y + 1, z);
-                    const belowMat = MaterialRegistry.get(belowType);
+                    // Skip empty or static particles
+                    if (type === E.EMPTY || type === E.STONE) continue;
+
+                    const mat = MaterialRegistry.get(type);
                     
-                    // Priority 1: Move Down (Y-axis)
+                    // --- PRIORITY 1: Fall Down (Y-Axis) ---
+                    const belowMat = MaterialRegistry.get(this.get(x, y + 1, z));
                     if (mat.density > belowMat.density) {
                         this.swap(x, y, z, x, y + 1, z);
-                        continue;
+                        continue; // Particle moved, so we're done with it for this frame
                     }
-
-                    // Priority 2: Flow Sideways / Tumble (X-axis)
+                    
+                    // --- PRIORITY 2: Spread Sideways (X-Axis) ---
                     const dir = Math.random() < 0.5 ? 1 : -1;
-                    if (mat.state === 'liquid' || type === E.FIRE || type === E.SMOKE) {
-                        const sideType = this.get(x + dir, y, z);
-                        if (mat.density > MaterialRegistry.get(sideType).density) {
+                    const belowSideMat = MaterialRegistry.get(this.get(x + dir, y + 1, z));
+
+                    if (type === E.SAND && mat.density > belowSideMat.density) {
+                        this.swap(x, y, z, x + dir, y + 1, z);
+                        continue;
+                    } else if (type === E.WATER) {
+                        const sideMat = MaterialRegistry.get(this.get(x + dir, y, z));
+                        if (mat.density > sideMat.density) {
                             this.swap(x, y, z, x + dir, y, z);
                             continue;
                         }
-                    } else if (mat.state === 'solid') {
-                        const belowSideType = this.get(x + dir, y + 1, z);
-                        if (mat.density > MaterialRegistry.get(belowSideType).density) {
-                            this.swap(x, y, z, x + dir, y + 1, z);
-                            continue;
-                        }
                     }
 
-                    // NEW -- Priority 3: Flow into other layers (Z-axis)
-                    // Allows particles to "push" into the background if blocked.
-                    const behindType = this.get(x, y, z + 1);
-                    if (mat.density > MaterialRegistry.get(behindType).density) {
-                        this.swap(x, y, z, x, y, z + 1);
+                    // --- PRIORITY 3: Flow Between Layers (Z-Axis) ---
+                    // This is the critical new logic.
+                    // If a particle couldn't move down or sideways, it checks for space in front or behind.
+                    const zDir = Math.random() < 0.5 ? 1 : -1; // Check a random adjacent layer
+                    const zMat = MaterialRegistry.get(this.get(x, y, z + zDir));
+
+                    if (mat.density > zMat.density) {
+                        this.swap(x, y, z, x, y, z + zDir);
                     }
                 }
             }
