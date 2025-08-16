@@ -10,7 +10,9 @@ export class Player {
         this.width = 5; // Width in grid cells/pixels
         this.height = 8; // Height in grid cells/pixels
         this.grounded = false;
-        
+        this.mass = 50; // Arbitrary mass for physics calculations
+        this.density = 8; // Density for interactions with materials
+
         // Constants from platformer.js
         this.GRAVITY = 0.5;
         this.FRICTION = 0.8;

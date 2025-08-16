@@ -68,7 +68,7 @@ export class CellGrid {
                     const dir = Math.random() < 0.5 ? 1 : -1;
                     const belowSideType = this.get(x + dir, y + 1);
                     if (MaterialRegistry.get(belowSideType).density < currentMat.density) {
-                         this.swap(x, y, x + dir, y + 1);
+                        this.swap(x, y, x + dir, y + 1);
                     }
                 }
             }

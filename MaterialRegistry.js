@@ -25,6 +25,11 @@ export class MaterialRegistry {
         return mat && mat.state === 'liquid';
     }
 
+    static isGas(type) {
+        const mat = this.get(type);
+        return mat && mat.state === 'gas';
+    }
+
     static isDamaging(type) {
         const mat = this.get(type);
         return mat && mat.damage > 0;

@@ -11,7 +11,7 @@ export class LevelGenerator {
         }
 
         // 2. Carve out some "caverns" (like the rooms in your generator)
-        const roomTries = 500;
+        const roomTries = 75;
         const rooms = [];
         for (let i = 0; i < roomTries; i++) {
             const w = Math.floor(Math.random() * 20) + 15;
